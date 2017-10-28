@@ -1,7 +1,8 @@
 from __future__ import print_function
 
 from keras import optimizers
-from keras.engine.training import collect_trainable_weights
+from keras import regularizers
+# from keras.engine.training import collect_trainable_weights
 from keras.models import Model
 import keras.backend as K
 
@@ -33,8 +34,9 @@ class ReinforcementModel(Model):
 
         # compute loss with regularization
         total_loss = distribution
-        for r in self.regularizers:
-            total_loss = r(total_loss)
+        total_loss = regularizers.l2(0.01)(total_loss)
+        # for r in self.regularizers:
+            # total_loss = r(total_loss)
 
         # for training
         self.optimizer = optimizers.get(optimizer)
@@ -59,8 +61,8 @@ class ReinforcementModel(Model):
                 inputs = self.inputs + self.targets
 
             # get trainable weights
-            trainable_weights = collect_trainable_weights(self)
-            training_updates = self.optimizer.get_updates(trainable_weights, self.constraints,
+            trainable_weights = self.trainable_weights
+            training_updates = self.optimizer.get_updates(trainable_weights, None,
                                                           K.sum(self.total_loss * self.targets[0]))
             updates = self.updates + training_updates
 
