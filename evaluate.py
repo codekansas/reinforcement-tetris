@@ -3,7 +3,7 @@ from __future__ import print_function
 import numpy as np
 
 from keras.engine import Input, Model
-from keras.layers import Dense, Flatten, Dropout, Convolution2D, MaxPooling2D, Reshape
+from keras.layers import Dense, Flatten, Dropout, Conv2D, MaxPooling2D, Reshape
 
 from engine import TetrisEngine
 from models import Reinforcer, ReinforcementModel, fit_reinforcement
@@ -77,12 +77,13 @@ if __name__ == '__main__':
 
     input = Input(shape=(width, height), dtype='float32')
     reshape = Reshape((1, width, height))(input)
-    conv = Convolution2D(32, 2, 2)(reshape)
+    conv = Conv2D(32, (2, 2),  data_format='channels_first')(reshape)
     dropout = Dropout(0.5)(conv)
     maxpool = MaxPooling2D((2, 2))(dropout)
     flat = Flatten()(maxpool)
     dense = Dense(engine.nb_actions, activation='softmax')(flat)
     model = ReinforcementModel(input=[input], output=[dense])
+    # print(model.summary())
     model.compile('sgd')
 
     # try training a regular model
