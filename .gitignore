@@ -1,7 +1,10 @@
-
 # python files
 *.pyc
 
 # ide files
 .idea
+*.swp
+
+# envs
+*env
 
