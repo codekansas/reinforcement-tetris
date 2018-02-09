@@ -141,7 +141,6 @@ class TetrisEngine(object):
         self.width = width
         self.height = height
         self.board = np.zeros(shape=(width, height), dtype=np.bool)
-        self.dummy = np.zeros(shape=(width, height), dtype=np.bool)
 
         self.shapes = Shapes()
         self.actions = Actions()
@@ -192,30 +191,32 @@ class TetrisEngine(object):
             if cleared_lines == 0:
                 self.combo_counter = 0
             else:
-                self.score += 50 * self.combo_counter
+                self.score += 500 * self.combo_counter
                 self.combo_counter += 1
 
             if cleared_lines == 1:
-                self.score += 100
+                self.score += 1000
             elif cleared_lines == 2:
-                self.score += 300
+                self.score += 3000
             elif cleared_lines == 3:
-                self.score += 500
+                self.score += 5000
 
             if cleared_lines == 4:
                 if self.tetris_flag:
-                    self.score += 1200
+                    self.score += 12000
                 else:
                     self.tetris_flag = True
-                    self.score += 800
+                    self.score += 8000
             else:
                 self.tetris_flag = False
 
         if action is not None:
             if action == self.actions.HARD_DROP:
-                self.score += 2 * self.actions.drop_distance
+                # self.score += 2 * self.actions.drop_distance
+                pass
             elif action == self.actions.SOFT_DROP:
-                self.score += 1
+                # self.score += 1
+                pass
 
             if self.actions.bad_move:
                 self.score -= 2
@@ -245,7 +246,7 @@ class TetrisEngine(object):
             self.shape, self.anchor = self.actions.soft_drop(*act_params)
 
         if self._has_dropped():
-            self.set_piece(True)
+            self.set_piece()
             self._clear_lines()
             if np.any(self.board[:, 0]):
                 self.clear()
@@ -260,15 +261,17 @@ class TetrisEngine(object):
         self._new_piece()
         self.board[:] = 0
 
-    def set_piece(self, on=False, on_dummy=False):
-        board = self.dummy if on_dummy else self.board
+    def clear_piece(self):
+        self.toggle_piece(False)
+
+    def set_piece(self):
+        self.toggle_piece(True)
+
+    def toggle_piece(self, on):
         for i, j in self.shape:
             x, y = int(i + self.anchor[0]), int(j + self.anchor[1])
-            if x < self.width and x >= 0 and y < self.height and y >= 0:
-                if on_dummy:
-                    self.dummy[x, y] = on
-                else:
-                    self.board[x, y] = on
+            if x >= 0 and y >= 0:
+                self.board[x, y] = on
 
     def serialize_board(self, board):
         board = np.squeeze(board)
@@ -279,9 +282,9 @@ class TetrisEngine(object):
         return s
 
     def __repr__(self):
-        self.set_piece(on=True)
+        self.set_piece()
         s = self.serialize_board(self.board)
-        self.set_piece(on=False)
+        self.clear_piece()
         return s
 
 

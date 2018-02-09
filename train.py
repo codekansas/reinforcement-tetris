@@ -18,7 +18,8 @@ def get_as_batch(arr):
     return np.copy(arr.reshape(1, w, l, 1))
 
 
-def build_models(board_width, board_length, num_shapes, num_actions):
+def build_models(board_width, board_length, num_shapes, num_actions,
+                 gamma=0.9):
     '''Builds the predictive model.
     Args:
         board_width (int): the width of the playing board.
@@ -29,50 +30,89 @@ def build_models(board_width, board_length, num_shapes, num_actions):
         a keras model for predicting the reward over each action from the
         current state.
     '''
-    b = ks.layers.Input(shape=(board_width, board_length, 1))
-    d = ks.layers.Input(shape=(board_width, board_length, 1))
 
-    x = ks.layers.Conv2D(32, (board_width, 2))(b)
-    x = ks.layers.LeakyReLU()(x)
-    x = ks.layers.Dropout(0.3)(x)
-    x = ks.layers.Conv2D(32, (1, 2))(x)
-    x = ks.layers.LeakyReLU()(x)
-    x = ks.layers.Dropout(0.3)(x)
+    BOARD_SHAPE = (board_width, board_length, 1)
 
-    y = ks.layers.Conv2D(32, (board_width, 2))(d)
-    y = ks.layers.LeakyReLU()(y)
-    y = ks.layers.Dropout(0.3)(y)
-    y = ks.layers.Conv2D(32, (1, 2))(y)
-    y = ks.layers.LeakyReLU()(y)
-    y = ks.layers.Dropout(0.3)(y)
+    # Defines the input tensors; action, reward, the board (state), and the
+    # board after taking the action.
+    action = ks.layers.Input(shape=(1,), dtype='int32')
+    reward = ks.layers.Input(shape=(1,))
+    s = ks.layers.Input(shape=BOARD_SHAPE)
+    sp = ks.layers.Input(shape=BOARD_SHAPE)
 
-    # Combines and flattens the layer.
-    x = ks.layers.concatenate([x, y])
-    x = ks.layers.Flatten()(x)
+    def _build_model(num_outputs, activation):
+        return ks.models.Sequential([
+            ks.layers.Conv2D(64, (2, 2), (2, 2), input_shape=BOARD_SHAPE),
+            ks.layers.LeakyReLU(),
+            ks.layers.BatchNormalization(),
+            ks.layers.Conv2D(64, (2, 2), (2, 2)),
+            ks.layers.LeakyReLU(),
+            ks.layers.BatchNormalization(),
+            ks.layers.Flatten(),
+            ks.layers.Dense(num_outputs, activation=activation),
+        ])
 
-    x = ks.layers.Dense(512)(x)
-    x = ks.layers.LeakyReLU()(x)
-    x = ks.layers.Dropout(0.3)(x)
-    x = ks.layers.Dense(num_actions)(x)
-    sample_model = ks.models.Model([b, d], x)
+    # Predicts the policy space.
+    policy_model = _build_model(num_actions, 'softmax')
+    policy = policy_model(s)
 
-    # Compiles a separate model for training.
+    # Predicts the value function.
+    value_model = _build_model(1, None)
+
+    # Computes the advantage function.
+    sy, spy = value_model(s), value_model(sp)
+
+    # Makes a layer to predict the discounted future reward.
+    def _compute_dfr(x):
+        reward, spy = x
+        return tf.stop_gradient(reward + gamma * spy)
+    dfr = ks.layers.Lambda(_compute_dfr)([reward, spy])
+
+    # Gets the value loss as a Keras tensor.
+    def _value_loss(x):
+        l = ks.losses.get('mse')(*x) * 0.5
+        return tf.reshape(l, (-1, 1))
+    value_loss = ks.layers.Lambda(_value_loss, name='value')([dfr, sy])
+
     def _get_index(x):
+        '''Selects the index associated with a particular action.'''
         b, a = x
-        a = tf.reshape(a, (-1,))
+        a = tf.squeeze(a, 1)
+        a.set_shape(b.get_shape()[:1])
         inds = tf.stack([tf.range(tf.shape(a)[0]), a], 1)
-        return tf.reshape(tf.gather_nd(b, inds), (-1, 1))
+        pols = tf.reshape(tf.gather_nd(b, inds), (-1, 1))
+        return pols
 
-    def maxr(y_true, _):
-        return tf.reduce_max(y_true)
+    # Gets the policy probability associated with the action.
+    action_prob = ks.layers.Lambda(_get_index)([policy, action])
 
-    def minr(y_true, _):
-        return tf.reduce_min(y_true)
+    # Outputs a layer to compute the policy loss.
+    def _policy_loss(x):
+        dfr, sy, action_prob = x
+        advantage = dfr - sy
+        policy_loss = ks.losses.get('binary_crossentropy')
+        policy_loss = -tf.stop_gradient(advantage) * tf.log(action_prob + 1e-9)
+        return policy_loss
+    policy_loss = ks.layers.Lambda(_policy_loss, name='policy')([
+        dfr, sy, action_prob
+    ])
 
-    a = ks.layers.Input(shape=(1,), dtype='int32')
-    x = ks.layers.Lambda(_get_index)([x, a])
-    train_model = ks.models.Model([b, d, a], x)
-    train_model.compile(optimizer='adam', loss='mae', metrics=[maxr, minr])
+    # Adds a layer to compute the entropy loss..
+    def _entropy_loss(policy):
+        ent = -tf.log(policy + 1e-9) * policy
+        return -tf.reduce_mean(ent, keep_dims=True) * 0.05
+    entropy_loss = ks.layers.Lambda(_entropy_loss, name='entropy')(action_prob)
+
+    # Builds the training model.
+    train_model = ks.models.Model(
+        [s, sp, action, reward],
+        [policy_loss, entropy_loss, value_loss],
+    )
+
+    train_model.compile(optimizer='adam', loss=lambda _, i: i)
+
+    # Builds the sampling model.
+    sample_model = ks.models.Model(s, policy)
 
     return train_model, sample_model
 
@@ -84,7 +124,7 @@ def sample_action(q_dist, epsilon):
         return q_dist.argmax()
 
 
-def collect_samples(model, engine, nsamples, epsilon=0.9, gamma=0.95):
+def collect_samples(model, engine, nsamples, epsilon=0.9):
     '''Collects samples by running the model.
     Args:
         model (keras model): the model that takes as input the current state
@@ -94,52 +134,45 @@ def collect_samples(model, engine, nsamples, epsilon=0.9, gamma=0.95):
             operates on.
         nsamples (int): number of samples to draw.
         epsilon (float): the epsilon to use for epsilon-greedy sampling.
-        gamma (float): the discount rate for future rewards.
     Returns:
         samples consisting of state-reward pairs, where the state is the board
         and the rewards are the TD rewards.
     '''
 
-    boards, dummies, actions, rewards, next_qs = [], [], [], [], []
+    boards, actions, rewards, next_qs = [], [], [], []
     engine.clear()
 
-    prev_score = 0
-    for i in range(nsamples):
-        engine.set_piece(on=True, on_dummy=True)
+    prev_score = engine.score
+    for i in range(nsamples + 1):
+        engine.set_piece()
         board = get_as_batch(engine.board)
-        dummy = get_as_batch(engine.dummy)
-        q_dist = model.predict([board, dummy]).squeeze(0)
+        engine.clear_piece()
+        q_dist = model.predict(board).squeeze(0)
         action = sample_action(q_dist, epsilon)
-        engine.set_piece(on=False, on_dummy=True)
 
         # Steps the engine with the new action and sees what happens.
         engine.step(action)
         if engine.dead:
-            reward = -3
+            reward = -100.
         else:
-            reward = (engine.score - prev_score) / 100  # Normalization factor.
+            reward = float(engine.score - prev_score)
         prev_score = engine.score
 
         boards.append(board)
-        dummies.append(dummy)
         actions.append(action)
         rewards.append(reward)
 
     # Gets the "final" q-value.
     board = get_as_batch(engine.board)
-    dummy = get_as_batch(engine.dummy)
-    rewards.append(model.predict([board, dummy]).max())
 
-    # Computes the targets by reverse-accumulating.
-    for i in range(len(rewards) - 2, -1, -1):
-        rewards[i] += rewards[i+1] * gamma
-
-    rewards = np.expand_dims(np.array(rewards[:-1]), -1)
+    rewards = np.expand_dims(np.array(rewards), -1)
     boards = np.concatenate(boards, 0)
-    dummies = np.concatenate(dummies, 0)
     actions = np.expand_dims(np.array(actions), -1)
 
-    return boards, dummies, actions, rewards
+    # Normalizes rewards.
+    # rewards /= 100.
+
+    return boards, actions, rewards
 
 
 def train(train_model, sample_model, engine, sample_len, n_epochs,
@@ -148,22 +181,34 @@ def train(train_model, sample_model, engine, sample_len, n_epochs,
     Args:
         todo
     '''
+    mean_rewards = []
     sample_idx = 0
-    boards, dummies, actions, targets = None, None, None, None
+    boards, actions, targets = None, None, None
     for epoch in range(1, n_epochs + 1):
         epsilon = initial_eps * math.exp(-sample_idx / eps_decay)
         sample_idx += 1
 
         # Collects samples following the epsilon-greedy policy.
-        boards, dummies, actions, targets = collect_samples(
+        boards, actions, rewards = collect_samples(
             sample_model, engine, sample_len,
             epsilon=epsilon,
         )
 
+        mean_rewards.append(rewards.mean())
+        print('Rewards:')
+        print('\n'.join('  Epoch {}: {:.3f}'.format(i, r)
+                        for i, r in enumerate(mean_rewards, 1)))
+
+        # Off-sets by one time step.
+        s, sp = boards[:-1], boards[1:]
+        actions = actions[:-1]
+        rewards = rewards[:-1]
+
         # Fits the states and actions to their TD targets.
+        batch_size = 100
         train_model.fit(
-            [boards, dummies, actions],
-            targets,
+            [s, sp, actions, rewards],
+            [np.zeros((s.shape[0],) + i[1:]) for i in train_model.output_shape],
             batch_size=100,
             initial_epoch=epoch - 1,
             epochs=epoch + 5,
@@ -172,16 +217,15 @@ def train(train_model, sample_model, engine, sample_len, n_epochs,
         )
 
         # Evaluates the model after it's done.
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             start_score = engine.score
-            for _ in range(100):
+            for _ in range(20):
                 board = get_as_batch(engine.board)
-                dummy = get_as_batch(engine.dummy)
-                q_dist = sample_model.predict([board, dummy])
+                q_dist = sample_model.predict(board)
                 action = sample_action(q_dist, epsilon)
                 engine.step(action)
                 print(engine)
-                time.sleep(0.01)
+                time.sleep(0.05)
             print('Score gain: {}'.format(engine.score - start_score))
         print('Total lines cleared: {}'.format(engine.cleared_lines))
         print('Total deaths: {}'.format(engine.deaths))
