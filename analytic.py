@@ -17,12 +17,28 @@ def compute_dropped_score_height(engine, good_ijs, cleared):
     '''Computes a score based on the resulting height.'''
     score = 0
     for i, c in enumerate(engine.board):
+        buf = 0
         for j, v in enumerate(c):
             if j in cleared:
-                continue
+                buf += 1
+            elif v or (i, j) in good_ijs:
+                score += engine.height - j - buf
+    return score
+
+
+def compute_dropped_score_left(engine, good_ijs, cleared):
+    '''Computes a score based on how far left the dropped pieces are.'''
+    score = 0
+    board = engine.board.T
+    for j, c in enumerate(board):
+        if j in cleared:
+            continue
+        flag = None
+        for i, v in enumerate(c):
             v = v or (i, j) in good_ijs
-            if v:
-                score += engine.height - j
+            if flag is not None and flag != v:
+                score += 1
+            flag = v
     return score
 
 
@@ -30,22 +46,29 @@ def compute_dropped_score_holes(engine, good_ijs, cleared):
     '''Computes a score based on the number of "holes" that are created.'''
     score = 0
     for i, c in enumerate(engine.board):
-        flag = False
+        flag = 0
         for j, v in enumerate(c):
             if j in cleared:
                 continue
             v = v or (i, j) in good_ijs
-            if flag and not v:
+            if flag == 0 and v:
+                flag = 1
+            elif flag == 1 and not v:
+                flag = 2
+            if flag == 2:
                 score += 1
-            elif v:
-                flag = True
     return score
 
 
 def compute_combined_heuristic(engine, good_ijs, cleared):
     height_score = compute_dropped_score_height(engine, good_ijs, cleared)
     holes_score = compute_dropped_score_holes(engine, good_ijs, cleared)
-    return holes_score + 0.01 * height_score - len(cleared) * 10
+    left_score = compute_dropped_score_left(engine, good_ijs, cleared)
+    return (
+        holes_score +
+        height_score * 1e-4 +
+        left_score
+    )
 
 
 def compute_dropped_score(engine, board, shape, anchor):
@@ -61,8 +84,8 @@ def compute_dropped_score(engine, board, shape, anchor):
         if all(v or (i, j) in good_ijs for i, v in enumerate(c))
     )
 
-    # return compute_dropped_score_height(engine, good_ijs)
-    # return compute_dropped_score_holes(engine, good_ijs)
+    # return compute_dropped_score_height(engine, good_ijs, cleared)
+    # return compute_dropped_score_holes(engine, good_ijs, cleared)
     return compute_combined_heuristic(engine, good_ijs, cleared)
 
 
@@ -115,12 +138,12 @@ def compute_optimal_steps(engine):
 
 
 if __name__ == '__main__':
-    engine = TetrisEngine(10, 20)
+    engine = TetrisEngine(width=10, height=20)
     steps = compute_optimal_steps(engine)
 
     while True:
         steps = compute_optimal_steps(engine)
         for step in steps:
-            print(engine)
             engine.step(step)
+            print(engine)
             time.sleep(0.05)

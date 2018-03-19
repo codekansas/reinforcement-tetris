@@ -22,6 +22,20 @@ def sample_action(q_dist, epsilon):
         return q_dist.argmax()
 
 
+def sample(engine, samples, sample_model):
+    for _ in range(samples):
+        board = engine.get_board()
+        q_dist = sample_model.predict(board)
+        action = q_dist.squeeze(0).argmax()
+        print(engine)
+        print('Score: {}'.format(engine.score))
+        print('Action: {}'.format(action))
+        print('Q Values: {:.3f}'.format(q_dist.squeeze(0)[action]))
+        reward = engines[0].step(action)
+        print('Reward: {}'.format(reward))
+        time.sleep(0.05)
+
+
 def build_models(board_width, board_length, num_shapes, num_actions):
     '''Builds the predictive model.
     Args:
@@ -218,17 +232,7 @@ def train(train_model, sample_model, engines, sample_len, n_epochs,
 
         # Evaluates the model after it's done.
         if epoch % 10 == 0:
-            for _ in range(200):
-                board = engines[0].get_board()
-                q_dist = sample_model.predict(board)
-                action = q_dist.squeeze(0).argmax()
-                print(engines[0])
-                print('Score: {}'.format(engines[0].score))
-                print('Action: {}'.format(action))
-                print('Q Values: {:.3f}'.format(q_dist.squeeze(0)[action]))
-                reward = engines[0].step(action)
-                print('Reward: {}'.format(reward))
-                time.sleep(0.05)
+            sample(engines[0], 200, sample_model)
         print('Total lines cleared: {}'.format(engines[0].cleared_lines))
         print('Total deaths: {}'.format(engines[0].deaths))
 
@@ -277,3 +281,5 @@ if __name__ == '__main__':
 
     train(train_model, sample_model, engines,
           args.sample_len, args.epoch_len, args.model_save_loc)
+
+    # sample(engines[0], 10000000, sample_model)
