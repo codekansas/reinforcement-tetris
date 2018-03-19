@@ -8,3 +8,5 @@
 # envs
 *env
 
+# large files
+*.h5

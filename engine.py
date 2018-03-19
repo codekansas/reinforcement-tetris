@@ -55,7 +55,6 @@ class Actions(object):
             self.ROTATE_RIGHT: self.rotate_right,
         }
         self.drop_distance = 0
-        self.bad_move = False
 
     def rotated(self, shape, cclk=False):
         if cclk:
@@ -75,36 +74,27 @@ class Actions(object):
     def left(self, shape, anchor, board):
         new_anchor = (anchor[0] - 1, anchor[1])
         if self.is_occupied(shape, new_anchor, board):
-            self.bad_move = True
             return (shape, anchor)
         else:
-            self.bad_move = False
             return (shape, new_anchor)
 
     def right(self, shape, anchor, board):
         new_anchor = (anchor[0] + 1, anchor[1])
         if self.is_occupied(shape, new_anchor, board):
-            self.bad_move = True
             return (shape, anchor)
         else:
-            self.bad_move = False
             return (shape, new_anchor)
 
     def soft_drop(self, shape, anchor, board):
         new_anchor = (anchor[0], anchor[1] + 1)
         if self.is_occupied(shape, new_anchor, board):
-            self.bad_move = True
             return (shape, anchor)
         else:
-            self.bad_move = False
             return (shape, new_anchor)
 
     def hard_drop(self, shape, anchor, board):
-        self.drop_distance = 0
         while True:
             shape, anchor_new = self.soft_drop(shape, anchor, board)
-            self.bad_move = False
-            self.drop_distance += 1
             if anchor_new == anchor:
                 return shape, anchor_new
             anchor = anchor_new
@@ -112,19 +102,15 @@ class Actions(object):
     def rotate_left(self, shape, anchor, board):
         new_shape = self.rotated(shape, cclk=False)
         if self.is_occupied(new_shape, anchor, board):
-            self.bad_move = True
             return (shape, anchor)
         else:
-            self.bad_move = False
             return (new_shape, anchor)
 
     def rotate_right(self, shape, anchor, board):
         new_shape = self.rotated(shape, cclk=True)
         if self.is_occupied(new_shape, anchor, board):
-            self.bad_move = True
             return (shape, anchor)
         else:
-            self.bad_move = False
             return (new_shape, anchor)
 
     def __contains__(self, i):
@@ -179,47 +165,39 @@ class TetrisEngine(object):
         self.shape_idx = self._choose_shape()
         self.shape = self.shapes[self.shape_idx]
 
-    def _has_dropped(self):
+    def has_dropped(self, shape, anchor, board):
         return self.actions.is_occupied(
-            self.shape,
-            (self.anchor[0], self.anchor[1] + 1),
-            self.board,
+            shape,
+            (anchor[0], anchor[1] + 1),
+            board,
         )
 
-    def _update_score(self, cleared_lines=None, action=None):
+    def _has_dropped(self):
+        return self.has_dropped(self.shape, self.anchor, self.board)
+
+    def _update_score(self, cleared_lines=None):
         if cleared_lines is not None:
             if cleared_lines == 0:
                 self.combo_counter = 0
             else:
-                self.score += 500 * self.combo_counter
+                self.score += 50 * self.combo_counter
                 self.combo_counter += 1
 
             if cleared_lines == 1:
-                self.score += 1000
+                self.score += 100
             elif cleared_lines == 2:
-                self.score += 3000
+                self.score += 300
             elif cleared_lines == 3:
-                self.score += 5000
+                self.score += 500
 
             if cleared_lines == 4:
                 if self.tetris_flag:
-                    self.score += 12000
+                    self.score += 1200
                 else:
                     self.tetris_flag = True
-                    self.score += 8000
+                    self.score += 800
             else:
                 self.tetris_flag = False
-
-        if action is not None:
-            if action == self.actions.HARD_DROP:
-                # self.score += 2 * self.actions.drop_distance
-                pass
-            elif action == self.actions.SOFT_DROP:
-                # self.score += 1
-                pass
-
-            if self.actions.bad_move:
-                self.score -= 2
 
     def _clear_lines(self):
         cleared = np.all(self.board, axis=0)
@@ -232,12 +210,32 @@ class TetrisEngine(object):
             np.zeros(shape=(self.width, num_cleared), dtype=np.bool),
             self.board[:, keep_lines],
         ], axis=1)
+        self._update_score(cleared_lines=num_cleared)
+
+    def get_board(self, include_dropped=True):
+        '''Returns a copy of the current board.'''
+
+        # Adds the dropped piece to the board.
+        if include_dropped:
+            s, a = self.actions.hard_drop(self.shape, self.anchor, self.board)
+            self.toggle_piece(True, shape=s, anchor=a)
+            self.set_piece()
+            w, l = self.board.shape
+            board_copy = np.copy(self.board).reshape(1, w, l, 1)
+            self.toggle_piece(False, shape=s, anchor=a)
+        else:
+            self.set_piece()
+            w, l = self.board.shape
+            board_copy = np.copy(self.board).reshape(1, w, l, 1)
+
+        self.clear_piece()
+        return board_copy
 
     def step(self, action):
+        prev_score = self.score
         self.dead = False
         act_params = (self.shape, self.anchor, self.board)
         self.shape, self.anchor = self.actions[action](*act_params)
-        self._update_score(action=action)
         self.time += 1
 
         # Drops once every 5 steps, unless it was a hard drop.
@@ -255,6 +253,12 @@ class TetrisEngine(object):
             else:
                 self._new_piece()
 
+        # Returns the computed score.
+        if self.dead:
+            return -1.
+        else:
+            return float(self.score - prev_score) * 0.01
+
     def clear(self):
         self.time = 0
         self.score = 0
@@ -267,25 +271,24 @@ class TetrisEngine(object):
     def set_piece(self):
         self.toggle_piece(True)
 
-    def toggle_piece(self, on):
-        for i, j in self.shape:
-            x, y = int(i + self.anchor[0]), int(j + self.anchor[1])
+    def toggle_piece(self, on, shape=None, anchor=None):
+        anchor = anchor or self.anchor
+        shape = shape or self.shape
+        for i, j in shape:
+            x, y = int(i + anchor[0]), int(j + anchor[1])
             if x >= 0 and y >= 0:
                 self.board[x, y] = on
 
-    def serialize_board(self, board):
+    def serialize_board(self, board, include_score=True):
         board = np.squeeze(board)
-        s = 'o' + '-' * board.shape[0] + 'o\n'
+        s = ['o' + '-' * board.shape[0] + 'o']
         f = lambda i: '|' + ''.join('X' if j else ' ' for j in i) + '|'
-        s += '\n'.join(f(i) for i in board.T)
-        s += '\no' + '-' * board.shape[0] + 'o'
-        return s
+        s += [f(i) for i in board.T]
+        s += ['o' + '-' * board.shape[0] + 'o']
+        return '\n'.join(s)
 
     def __repr__(self):
-        self.set_piece()
-        s = self.serialize_board(self.board)
-        self.clear_piece()
-        return s
+        return self.serialize_board(self.get_board(include_dropped=False))
 
 
 if __name__ == '__main__':
